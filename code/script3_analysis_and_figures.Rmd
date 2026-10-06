@@ -371,12 +371,17 @@ anova(model_full)
 print("(nonsignificant effect of Peak_interval)")
 
 model_full_emtrends <- emtrends(model_full, pairwise~ISI:Feedback,
-								var="IPI",
-								infer = c(TRUE, TRUE),
-								lmer.df = "satterthwaite",
-								lmerTest.limit = 10000)
-model_full_emtrends
-print("(slopes are not significantly different from each other---WithFdbk.666 slope is negative, though)")
+						var="IPI",
+						infer = c(TRUE, TRUE),
+						lmer.df = "satterthwaite",
+						lmerTest.limit = 10000)
+test_slopes <- test(model_full_emtrends$emtrends, null = -1, adjust = "fdr")
+test_slopes
+print("(slopes are not significantly different from -1 after multiple comparisons correction FDR)")
+
+model_full_emtrends$contrasts
+print("(slopes are not significantly different from each other after multiple comparisons correction Tukey)")
+
 
 # # check regression assumptions
 # # uncommment to show
