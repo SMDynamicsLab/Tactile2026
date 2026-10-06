@@ -1,0 +1,392 @@
+---
+title: "Linear model - Tactile2026 (Correa Morales, García Lodi Fe, Silva, Versaci, Spiousas, Laje)"
+output: html_document
+date: "2026-09-05"
+---
+
+## Load libraries
+```{r setup, include=FALSE}
+
+pacman::p_load(tidyverse, lmerTest, broom, modelsummary, patchwork, here, modelr, wesanderson, emmeans)
+
+
+```
+
+
+## Load data
+```{r load_data, echo=FALSE}
+
+# All conditions
+
+df_times <- read_csv(here("preprocessed data", "df_times.csv"), show_col_types = FALSE) %>%
+# df_times <- read_csv("../preprocessed data/df_times.csv", show_col_types = FALSE) %>%
+	select(- '...1') %>%
+	mutate(Effector = if_else(Effector == "D", "Finger", "Hand"),
+			Feedback = if_else(Participant <= 26, "WithFbk", "NoFbk")) %>%
+	rename(ISI = Period,
+		   IPI = Peak_interval,
+		   Asynchrony = Asyns_c)
+df_times$ISI <- factor(df_times$ISI, levels=c('444','666'), ordered=TRUE)
+df_times$Effector <- factor(df_times$Effector, levels=c('Finger','Hand'), ordered=TRUE)
+
+df_voltages <- read_csv(here("preprocessed data", "df_voltages.csv"), show_col_types = FALSE) %>%
+# df_voltages <- read_csv("../preprocessed data/df_voltages.csv", show_col_types = FALSE) %>%
+	select(- '...1') %>%
+	mutate(Effector = if_else(Effector == "D", "Finger", "Hand")) %>%
+	rename(ISI = Period,
+			Voltage = Voltages)
+df_voltages$ISI <- factor(df_voltages$ISI, levels=c('444','666'), ordered=TRUE)
+df_voltages$Effector <- factor(df_voltages$Effector, levels=c('Finger','Hand'), ordered=TRUE)
+
+
+
+fsize <- 9
+msize <- 1
+fig_width <- 8
+fig_height <- 3
+
+color_begin <- 0.1
+color_end <- 0.8
+color_palette = "plasma"
+
+
+# datasummary_skim(df_times)
+# datasummary_skim(df_voltages)
+
+
+```
+
+
+## Individual distributions of Peak_interval
+```{r interpeak_interval_distributions, echo=FALSE}
+
+plot_participant_IPI_dist <- df_times %>%
+	ggplot(aes(x = IPI)) +
+	geom_density(aes(color = Effector,
+			   fill = Effector),
+				 alpha=0.75) +
+	facet_wrap(~Participant) +
+	scale_color_viridis_d(begin=color_begin, end=color_end,
+						  option=color_palette) +
+	scale_fill_viridis_d(begin=color_begin, end=color_end,
+						 option=color_palette) +
+	theme_bw(base_size=fsize) +
+	theme(legend.position = "top",
+		plot.background = element_rect(fill = "white", color = NA),
+		strip.background = element_blank()) +
+	labs(title = "With Feedback")
+# uncomment to show plot
+# plot_participant_IPI_dist
+
+# remove subjects with inverted distributions:
+# Peak_interval(Hand) > Peak_interval(Finger)
+# (results are not dependent on this---it's just cleaner)
+participants_inverted_dists <- c(24,51,50)
+removed_participants <- c(participants_inverted_dists)
+df_times <- df_times %>%
+	filter(! Participant %in% removed_participants)
+df_voltages <- df_voltages %>%
+	filter(! Participant %in% removed_participants)
+
+
+```
+
+
+## Out-of-phase data (subjects not following instructions)
+```{r remove_out_of_phase, echo=FALSE}
+# Detect and remove out-of-phase data
+
+ISI_fraction_max = 0.25
+outphase_fraction_max = 0.25
+
+
+# condition for out-of=phase taps: large asynchrony close to half period
+# (relative to mean asynchrony)
+outphase_condition <- "Asynchrony + m_asyn > ISI_fraction_max*as.numeric(as.character(ISI)) | Asynchrony + m_asyn < -ISI_fraction_max*as.numeric(as.character(ISI))"
+
+# plot out-of-phase subjects
+plot_outphase <- df_times %>%
+	group_by(Participant, Cond, Trial) %>%
+	mutate(nTaps = n(),
+		m_asyn = mean(Asynchrony)) %>%
+	filter(eval(parse(text=outphase_condition))) %>%
+	ggplot(aes(x = IPI, y = Asynchrony, color = factor(Participant))) +
+	geom_point(alpha = 0.2) +
+	geom_line(aes(group = interaction(Participant, Trial))) +
+	facet_wrap(Effector~ISI) +
+	scale_color_viridis_d(begin=color_begin, end=color_end,
+						  option=color_palette) +
+	scale_fill_viridis_d(begin=color_begin, end=color_end,
+						 option=color_palette) +
+	theme_bw(base_size=fsize) +
+	theme(legend.position = "top",
+		strip.background = element_blank())
+# uncomment to show plot
+# plot_outphase
+
+# detect out-of-phase trials
+df_times_outphase <- df_times %>% 
+	group_by(Participant, Cond, Trial) %>%
+	mutate(nTaps = n(),
+		m_asyn = mean(Asynchrony)) %>%
+	# detect out-of-phase taps
+	filter(eval(parse(text=outphase_condition))) %>%
+	group_by(Participant, Cond, Trial, ISI) %>%
+	summarise(count_outphase = n(),
+			nTaps = first(nTaps),
+			m_asyn = first(m_asyn),
+			outphase_fraction = count_outphase/nTaps) %>%
+	# detect trials with a large fraction of out-of-phase taps
+	filter(outphase_fraction > outphase_fraction_max) %>%
+	arrange(desc(count_outphase))
+# remove out-of-phase trials
+df_times_inphase <- df_times %>%
+	anti_join(df_times_outphase, by = c("Participant", "Cond", "Trial"))
+df_voltages_inphase <- df_voltages %>%
+	anti_join(df_times_outphase, by = c("Participant", "Cond", "Trial"))
+
+
+```
+
+
+## Outliers
+```{r outliers, echo=FALSE}
+
+# detect and remove random outliers (Tukey's fences)
+df_times_outliers <- df_times_inphase %>%
+	group_by(Participant, Cond) %>%
+	mutate(Q1 = quantile(Asynchrony, 0.25),
+			Q3 = quantile(Asynchrony, 0.75),
+			lower_bound = Q1 - 1.5*(Q3-Q1),
+			upper_bound = Q3 + 1.5*(Q3-Q1)) %>%
+	filter(Asynchrony < lower_bound | Asynchrony > upper_bound) %>%
+	select(-Q1, -Q3, -lower_bound, -upper_bound) %>%
+	ungroup()
+df_times_inphase <- df_times_inphase %>%
+			anti_join(df_times_outliers,
+					  by = c("Participant","Block","Cond","Trial","Tap"))
+df_voltages_inphase <- df_voltages_inphase %>%
+			anti_join(df_times_outliers,
+					  by = c("Participant","Block","Cond","Trial","Tap"))
+
+# detect and remove extremely short trials
+df_times_inphase_participant <- df_times_inphase %>%
+	group_by(Participant,Trial,Cond) %>%
+	summarise(n_taps = n()) %>%
+	filter(n_taps <= 2)
+df_times_inphase <- df_times_inphase %>%
+			anti_join(df_times_inphase_participant,
+					  by = c("Participant", "Cond", "Trial"))
+df_voltages_inphase <- df_voltages_inphase %>%
+			anti_join(df_times_inphase_participant,
+					  by = c("Participant", "Cond", "Trial"))
+
+# outlier summary
+print(paste0('number of initial valid taps: ',nrow(df_times)))
+print(paste0('number of valid trials flagged as antiphase: '
+					,nrow(df_times_outphase)))
+print(paste0('number of valid taps after antiphase and random outlier removal: '
+					,nrow(df_times_inphase)))
+
+
+```
+
+
+## Figures
+
+```{r figures}
+
+
+# Force profiles from single participant:
+participant <- 13
+df_voltages_inphase_participant <- df_voltages_inphase %>%
+	filter(Participant==participant)
+df_voltages_inphase_part_median <- df_voltages_inphase_participant %>%
+	group_by(Participant,Effector,Time) %>%
+	summarize(Voltage_median = mean(Voltage),
+			  Block = first(Block),
+			  Trial = first(Trial),
+			  Tap = first(Tap))
+
+plot_forceprofile <- df_voltages_inphase_participant %>%
+	ggplot(aes(x = Time, y = Voltage,
+			   color = Effector,
+			   group = interaction(Participant,Block,Trial,Tap))) +
+	geom_path(aes(color = Effector), alpha = 0.1) +
+	geom_path(data=df_voltages_inphase_part_median,
+			  aes(x=Time, y=Voltage_median,
+			  		color=Effector),
+			  linewidth=1) +
+	scale_color_viridis_d(begin=color_begin, end=color_end,
+						  option=color_palette) +
+	scale_fill_viridis_d(begin=color_begin, end=color_end,
+						 option=color_palette) +
+	theme_bw(base_size=fsize) +
+	labs(x="Time (ms)", y="Force (a.u.)")
+
+
+# Histogram of Interpeak interval:
+plot_IPIdist <- df_times_inphase %>%
+		ggplot(aes(x = IPI,
+		         color = Effector,
+		         fill = Effector)) +
+		geom_density(alpha = 0.5) +
+		scale_color_viridis_d(begin=color_begin, end=color_end,
+							  option=color_palette) +
+		scale_fill_viridis_d(begin=color_begin, end=color_end,
+							 option=color_palette) +
+		theme_bw(base_size=fsize) +
+		theme(legend.position = "none") +
+		labs(x = "Interpeak interval (ms)", y = NULL,
+			color = NULL, fill = NULL)
+
+plot_force_and_hist <- (plot_forceprofile | plot_IPIdist) + 
+					plot_annotation(tag_levels="A")
+plot_force_and_hist
+
+ggsave(here("code","plot_force_and_hist.pdf"), plot=plot_force_and_hist, width=fig_width, height=fig_height)
+ggsave(here("code","plot_force_and_hist.png"), plot=plot_force_and_hist, width=fig_width, height=fig_height, bg='white',dpi=150)
+# ggsave("plot_force_and_hist.pdf", plot=plot_force_and_hist, width=fig_width, height=fig_height)
+# ggsave("plot_force_and_hist.png", plot=plot_force_and_hist, width=fig_width, height=fig_height, bg='white',dpi=150)
+
+
+
+# Single trial with asynchronies and force profiles
+participant <- 13
+block <- 2
+cond <- "D1"
+trial <- 2
+
+fsize <- 11
+fig_width <- 10
+fig_height <- 4
+
+df_times_inphase_trial <- df_times_inphase %>%
+		filter(Participant==participant & Block==block &
+				Cond==cond & Trial==trial)
+df_voltages_inphase_trial <- df_voltages_inphase %>%
+		filter(Participant==participant & Block==block &
+				Cond==cond & Trial==trial)
+
+tap_breaks <- seq(1, nrow(df_times_inphase_trial), by = 1)
+tap_labels <- ifelse(tap_breaks %% 5 == 0, as.character(tap_breaks), "")
+
+plot_singletrial_asyn <- df_times_inphase_trial %>%
+		ggplot(aes(x=Tap, y=Asynchrony)) +
+		geom_point() +
+		geom_line() +
+		scale_x_continuous(breaks = tap_breaks,
+							labels = tap_labels) +
+		coord_cartesian(xlim=c(1.75,nrow(df_times_inphase_trial))) +
+		theme_bw(base_size=fsize) +
+		theme(legend.position = "none",
+				panel.grid.minor = element_blank()) +
+		labs(x = "Tap number", y = "Asynchrony (ms)")
+
+plot_singletrial_force <- df_voltages_inphase_trial %>%
+		ggplot(aes(x=Time, y=Voltage)) +
+		geom_path() +
+		facet_grid(~Tap) +
+		scale_x_continuous(breaks = c(0,60)) +
+		theme_bw(base_size=fsize) +
+		theme(strip.text = element_blank(),       
+			    strip.background = element_blank(),
+				panel.grid.major = element_blank(),
+				panel.grid.minor = element_blank()) +
+		theme(legend.position = "none") +
+		labs(x = "Time relative to tap occurrence (ms)", y = "Force (a.u.)")
+
+plot_singletrial <- (plot_singletrial_asyn / plot_singletrial_force) +
+					plot_annotation(tag_levels="A") +
+					plot_layout(heights = c(5, 3))
+
+ggsave(here("code","plot_singletrial.pdf"), plot=plot_singletrial, width=fig_width, height=fig_height)
+ggsave(here("code","plot_singletrial.png"), plot=plot_singletrial, width=fig_width, height=fig_height, bg='white',dpi=150)
+# ggsave("plot_singletrial.pdf", plot=plot_singletrial, width=fig_width, height=fig_height)
+# ggsave("plot_singletrial.png", plot=plot_singletrial, width=fig_width, height=fig_height, bg='white',dpi=150)
+
+
+
+# Plot main result:
+fsize <- 9
+msize <- 1
+fig_width <- 8
+fig_height <- 4
+# compute averages for plotting theoretical trends
+m_Asynchrony <- df_times_inphase %>%
+	group_by(ISI, Feedback) %>%
+	summarise(m_Asynchrony = mean(Asynchrony))
+
+plot_fullmodel <- df_times_inphase %>%
+	ggplot(aes(x = IPI, y = Asynchrony)) +
+	geom_point(aes(color = Effector), alpha = 0.2, size=msize) +
+	guides(color=guide_legend(override.aes = list(alpha = 1))) +
+	# optional: plot individual predictions
+	# geom_line(aes(y = pred, group = Subjs), color="darkgray") +
+	geom_smooth(aes(group = 1), method = "lm", color = "black", linewidth=0.5) +
+	geom_abline(data = m_Asynchrony, aes(intercept = m_Asynchrony, slope = 0),
+				linetype = "dashed", color = "black") +
+	geom_abline(data = m_Asynchrony, aes(intercept = m_Asynchrony, slope = -1),
+				linetype = "dashed", color = "black") +
+	facet_grid(Feedback~ISI) +
+	scale_color_viridis_d(begin=color_begin, end=color_end,
+						  option=color_palette) +
+	scale_fill_viridis_d(begin=color_begin, end=color_end,
+						 option=color_palette) +
+	theme_bw(base_size=fsize) +
+	theme(strip.text = element_text(size=fsize,face = "bold"),
+		strip.background=element_blank()) +
+	labs(x="Interpeak interval (ms)", y="Asynchrony (ms)")
+plot_fullmodel
+
+ggsave(here("code","plot_full.pdf"), plot=plot_fullmodel, width=fig_width, height=fig_height)
+ggsave(here("code","plot_full.png"), plot=plot_fullmodel, width=8, height=4, bg='white',dpi=150)
+# ggsave("plot_full.pdf", plot=plot_fullmodel, width=fig_width, height=fig_height)
+# ggsave("plot_full.png", plot=plot_fullmodel, width=fig_width, height=fig_height, bg='white',dpi=150)
+
+
+
+```
+
+## Full model
+```{r full_model_and_plot, echo=FALSE}
+
+# scale continuous fixed-effect predictor for better convergence
+df_times_inphase_scaled <- df_times_inphase
+df_times_inphase_scaled$IPI <- scale(df_times_inphase_scaled$IPI)
+
+# linear regression (random intercepts and slopes)
+model_full <- lmer(data = df_times_inphase_scaled,
+				Asynchrony ~ IPI*ISI*Feedback
+						+ (1+IPI|Participant))
+
+# add individual predictions
+df_times_inphase <- df_times_inphase %>%
+	add_predictions(model_full)
+
+
+# show statistics
+summary(model_full)
+anova(model_full)
+print("(nonsignificant effect of Peak_interval)")
+
+model_full_emtrends <- emtrends(model_full, pairwise~ISI:Feedback,
+								var="IPI",
+								infer = c(TRUE, TRUE),
+								lmer.df = "satterthwaite",
+								lmerTest.limit = 10000)
+model_full_emtrends
+print("(slopes are not significantly different from each other---WithFdbk.666 slope is negative, though)")
+
+# # check regression assumptions
+# # uncommment to show
+# plot_checkmodel <- plot(performance::check_model(model_full, panel=FALSE))
+# plot_checkmodel
+
+
+```
+
+```{r}
+
+
+```
