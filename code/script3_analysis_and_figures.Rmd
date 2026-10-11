@@ -349,38 +349,53 @@ ggsave(here("code","plot_full.png"), plot=plot_fullmodel, width=8, height=4, bg=
 ```
 
 ## Full model
-```{r full_model_and_plot, echo=FALSE}
+```{r full_model, echo=FALSE}
 
-# scale continuous fixed-effect predictor for better convergence
-df_times_inphase_scaled <- df_times_inphase
-df_times_inphase_scaled$IPI <- scale(df_times_inphase_scaled$IPI)
+# scaling covariate for convergence:
+# instead of doing "df_times_inphase$IPI <- scale(df_times_inphase$IPI)"
+# use lmerControl "autoscale" to automatically transform back to original scale
 
-# linear regression (random intercepts and slopes)
-model_full <- lmer(data = df_times_inphase_scaled,
+model_full <- lmer(data = df_times_inphase,
 				Asynchrony ~ IPI*ISI*Feedback
-						+ (1+IPI|Participant))
+							+ (1+IPI|Participant),
+				control = lmerControl(autoscale = TRUE,
+								optimizer="nloptwrap",
+								check.conv.grad = .makeCC("warning",
+														  tol = 0.01)))
 
-# add individual predictions
-df_times_inphase <- df_times_inphase %>%
-	add_predictions(model_full)
+# stricter tolerances for convergence
+strict_tol <- lmerControl(optCtrl=list(xtol_abs=1e-10, ftol_abs=1e-10),
+						  			check.conv.grad = .makeCC("warning",
+						  									  tol = 0.001))
+# start from a slightly perturbed previous optimum
+previous_theta <- getME(model_full, "theta")*1.01
+model_full <- update(model_full, control=strict_tol,
+							start = list(theta = previous_theta))
 
-
-# show statistics
-summary(model_full)
+print(model_full)
 anova(model_full)
-print("(nonsignificant effect of Peak_interval)")
+print("(nonsignificant effect of interpeak interval IPI)")
 
+
+# # add individual predictions for plotting
+# df_times_inphase <- df_times_inphase %>%
+# 	add_predictions(model_full)
+
+
+# contrasts
 model_full_emtrends <- emtrends(model_full, pairwise~ISI:Feedback,
 						var="IPI",
 						infer = c(TRUE, TRUE),
 						lmer.df = "satterthwaite",
 						lmerTest.limit = 10000)
-test_slopes <- test(model_full_emtrends$emtrends, null = -1, adjust = "fdr")
+
+test_slopes <- test(model_full_emtrends$emtrends,
+					null = -1, adjust = "bonferroni")
 test_slopes
-print("(slopes are not significantly different from -1 after multiple comparisons correction FDR)")
+print("(slopes are significantly different from -1 after Bonferroni multiple comparisons correction)")
 
 model_full_emtrends$contrasts
-print("(slopes are not significantly different from each other after multiple comparisons correction Tukey)")
+print("(slopes are not significantly different from each other after Tukey multiple comparisons correction)")
 
 
 # # check regression assumptions
@@ -391,7 +406,3 @@ print("(slopes are not significantly different from each other after multiple co
 
 ```
 
-```{r}
-
-
-```
