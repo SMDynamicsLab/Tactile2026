@@ -389,10 +389,15 @@ model_full_emtrends <- emtrends(model_full, pairwise~ISI:Feedback,
 						lmer.df = "satterthwaite",
 						lmerTest.limit = 10000)
 
-test_slopes <- test(model_full_emtrends$emtrends,
+test_slopes_minus1 <- test(model_full_emtrends$emtrends,
 					null = -1, adjust = "bonferroni")
-test_slopes
+test_slopes_minus1
 print("(slopes are significantly different from -1 after Bonferroni multiple comparisons correction)")
+
+test_slopes_zero <- test(model_full_emtrends$emtrends,
+					null = 0, adjust = "bonferroni")
+test_slopes_zero
+print("(slopes are not significantly different from 0 after Bonferroni multiple comparisons correction)")
 
 model_full_emtrends$contrasts
 print("(slopes are not significantly different from each other after Tukey multiple comparisons correction)")
