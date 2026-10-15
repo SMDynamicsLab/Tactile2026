@@ -7,7 +7,7 @@ date: "2026-09-05"
 ## Load libraries
 ```{r setup, include=FALSE}
 
-pacman::p_load(tidyverse, lmerTest, broom, modelsummary, patchwork, here, modelr, wesanderson, emmeans)
+pacman::p_load(tidyverse, lmerTest, broom, broom.mixed, modelsummary, patchwork, here, modelr, wesanderson, emmeans)
 
 
 ```
@@ -197,13 +197,16 @@ print(paste0('number of valid taps after antiphase and random outlier removal: '
 ```{r figures}
 
 
+fig_width <- 8
+fig_height <- 3
+
 # Force profiles from single participant:
 participant <- 13
 df_voltages_inphase_participant <- df_voltages_inphase %>%
 	filter(Participant==participant)
 df_voltages_inphase_part_median <- df_voltages_inphase_participant %>%
 	group_by(Participant,Effector,Time) %>%
-	summarize(Voltage_median = mean(Voltage),
+	summarize(Voltage_median = median(Voltage),
 			  Block = first(Block),
 			  Trial = first(Trial),
 			  Tap = first(Tap))
@@ -237,7 +240,7 @@ plot_IPIdist <- df_times_inphase %>%
 							 option=color_palette) +
 		theme_bw(base_size=fsize) +
 		theme(legend.position = "none") +
-		labs(x = "Interpeak interval (ms)", y = NULL,
+		labs(x = "Interpeak interval IPI (ms)", y = NULL,
 			color = NULL, fill = NULL)
 
 plot_force_and_hist <- (plot_forceprofile | plot_IPIdist) + 
@@ -336,7 +339,7 @@ plot_fullmodel <- df_times_inphase %>%
 	theme_bw(base_size=fsize) +
 	theme(strip.text = element_text(size=fsize,face = "bold"),
 		strip.background=element_blank()) +
-	labs(x="Interpeak interval (ms)", y="Asynchrony (ms)")
+	labs(x="Interpeak interval IPI (ms)", y="Asynchrony (ms)")
 plot_fullmodel
 
 ggsave(here("code","plot_full.pdf"), plot=plot_fullmodel, width=fig_width, height=fig_height)
@@ -372,7 +375,8 @@ previous_theta <- getME(model_full, "theta")*1.01
 model_full <- update(model_full, control=strict_tol,
 							start = list(theta = previous_theta))
 
-print(model_full)
+# summary(model_full)
+print.data.frame(broom.mixed::tidy(model_full, effects="fixed", conf.int=TRUE))
 anova(model_full)
 print("(nonsignificant effect of interpeak interval IPI)")
 
@@ -411,3 +415,6 @@ print("(slopes are not significantly different from each other after Tukey multi
 
 ```
 
+```{r}
+
+```
